@@ -178,7 +178,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     products = con.execute("SELECT COUNT(*) FROM products").fetchone()[0]
     orders = con.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-    con.close()
     pending = con.execute("SELECT id,title FROM products WHERE status='pending' ORDER BY id DESC LIMIT 10").fetchall()
     con.close()
     summary = f"پنل مدیر نفس مارکت\nکاربران: {users}\nآگهی‌ها: {products}\nدرخواست‌های خرید: {orders}\nآگهی‌های در انتظار: {len(pending)}"
