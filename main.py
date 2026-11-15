@@ -71,13 +71,32 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["order_product"] = pid
         context.user_data["step"] = "order_note"
         await q.message.reply_text("تعداد و توضیحات درخواست خرید را بنویسید:")
+    elif q.data.startswith("reject:") and uid == ADMIN_ID:
+        pid = int(q.data.split(":")[1])
+        con = db()
+        row = con.execute("SELECT seller_id,title FROM products WHERE id=?", (pid,)).fetchone()
+        con.execute("UPDATE products SET status='rejected' WHERE id=?", (pid,))
+        con.commit()
+        con.close()
+        await q.message.reply_text("آگهی رد شد.")
+        if row:
+            try:
+                await context.bot.send_message(row[0], f"⚠️ آگهی «{row[1]}» منتشر نشد. لطفاً توضیحات و اطلاعات کالا را بررسی کنید و دوباره ثبت کنید.")
+            except Exception:
+                log.warning("Could not notify seller %s about rejection", row[0])
     elif q.data.startswith("approve:") and uid == ADMIN_ID:
         pid = int(q.data.split(":")[1])
         con = db()
+        row = con.execute("SELECT seller_id,title FROM products WHERE id=?", (pid,)).fetchone()
         con.execute("UPDATE products SET status='approved' WHERE id=?", (pid,))
         con.commit()
         con.close()
         await q.message.reply_text("کالا تأیید شد و در فهرست نمایش داده می‌شود.")
+        if row:
+            try:
+                await context.bot.send_message(row[0], f"✅ آگهی شما با عنوان «{row[1]}» در نفس مارکت تأیید و منتشر شد.")
+            except Exception:
+                log.warning("Could not notify seller %s about approval", row[0])
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -123,12 +142,33 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif step == "order_note":
         pid = context.user_data["order_product"]
         con = db()
+        product = con.execute("SELECT seller_id,title FROM products WHERE id=? AND status='approved'", (pid,)).fetchone()
+        if not product:
+            con.close()
+            context.user_data.clear()
+            await update.message.reply_text("این کالا دیگر در دسترس نیست.", reply_markup=menu())
+            return
         cur = con.execute("INSERT INTO orders(product_id,buyer_id,note) VALUES(?,?,?)", (pid, uid, value))
         oid = cur.lastrowid
         con.commit()
         con.close()
         context.user_data.clear()
-        await update.message.reply_text(f"درخواست خرید شما با شماره {oid} ثبت شد. فروشنده برای هماهنگی باید از طریق مدیر/سامانه پیگیری شود.", reply_markup=menu())
+        await update.message.reply_text(f"درخواست خرید شما با شماره {oid} ثبت شد.", reply_markup=menu())
+        seller_id, product_title = product
+        buyer = update.effective_user
+        buyer_label = f"@{buyer.username}" if buyer.username else buyer.full_name
+        try:
+            await context.bot.send_message(
+                seller_id,
+                f"🛎 درخواست خرید جدید در نفس مارکت\nشماره سفارش: {oid}\nکالا: {product_title}\nخریدار: {buyer_label}\nدرخواست: {value}\nبرای هماهنگی، از طریق تلگرام با خریدار ارتباط بگیرید."
+            )
+        except Exception:
+            log.warning("Could not notify seller %s about order %s", seller_id, oid)
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(ADMIN_ID, f"📦 سفارش جدید شماره {oid}\nکالا: {product_title}\nشناسه خریدار: {uid}\nفروشنده: {seller_id}")
+            except Exception:
+                log.warning("Could not notify admin about order %s", oid)
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or not ADMIN_ID:
@@ -138,8 +178,16 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     products = con.execute("SELECT COUNT(*) FROM products").fetchone()[0]
     orders = con.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    pending = con.execute("SELECT id,title FROM products WHERE status='pending' ORDER BY id DESC LIMIT 10").fetchall()
     con.close()
-    await update.message.reply_text(f"پنل مدیر نفس مارکت\nکاربران: {users}\nآگهی‌ها: {products}\nدرخواست‌های خرید: {orders}")
+    summary = f"پنل مدیر نفس مارکت\nکاربران: {users}\nآگهی‌ها: {products}\nدرخواست‌های خرید: {orders}\nآگهی‌های در انتظار: {len(pending)}"
+    await update.message.reply_text(summary)
+    for pid, title in pending:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ تأیید", callback_data=f"approve:{pid}"),
+            InlineKeyboardButton("❌ رد", callback_data=f"reject:{pid}")
+        ]])
+        await update.message.reply_text(f"آگهی شماره {pid}: {title}", reply_markup=kb)
 
 def main():
     if not TOKEN:
